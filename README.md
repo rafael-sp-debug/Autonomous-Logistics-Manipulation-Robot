@@ -10,10 +10,15 @@ The robot fuses wheel odometry with **ArUco** marker observations through an
 **Bug2** reactive obstacle-avoidance planner, and performs the final cube alignment with
 **vision-based servoing**. The whole mission is orchestrated by a finite-state machine.
 
+The full stack was first validated in a **Gazebo digital twin** — perception, EKF and
+navigation were tuned and stress-tested in simulation before a single line of code was
+deployed to the physical robot.
+
 > Built for the *Integration of Robotics and Intelligent Systems* course (TE3003B) at
 > Tecnológico de Monterrey. Real-hardware tested on the Puzzlebot platform.
 
 ![ROS 2](https://img.shields.io/badge/ROS_2-Humble-22314E?logo=ros)
+![Gazebo](https://img.shields.io/badge/Gazebo-Digital_Twin-FF7300?logo=gazebo&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)
 ![OpenCV](https://img.shields.io/badge/OpenCV-ArUco-5C3EE8?logo=opencv&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-blue)
@@ -22,9 +27,9 @@ The robot fuses wheel odometry with **ArUco** marker observations through an
 
 ## Demo
 
+**Real hardware — full mission cycle**
+
 https://github.com/user-attachments/assets/05913622-7189-42b9-b528-254710c863b0
-
-
 
 |  | |
 |---|---|
@@ -65,8 +70,12 @@ navigation/servoing, all sequenced by the mission coordinator.
                       └─────────┬─────────┘   └──────────────────────────────┘
                                 │ /cmd_vel                /target, /ServoAngle
                                 ▼
-                            Puzzlebot
+                       Puzzlebot  /  Gazebo model
 ```
+
+Because every node talks only through ROS 2 topics, the same executables run unchanged
+against the Gazebo model and against the real Puzzlebot — only the source of
+`/video_source/compressed`, `VelocityEncR/L` and `/scan` changes.
 
 ### Nodes
 
@@ -89,6 +98,69 @@ IDLE ─► NAVIGATE_TO_PICKUP ─► PICK ─► NAVIGATE_TO_DROPOFF ─► DEP
 `mission_state` is broadcast on every tick so the navigation and servoing nodes know
 whether they should be active — this prevents two modules from sending conflicting
 velocity commands at the same time.
+
+---
+
+## Simulation-first validation (Gazebo)
+
+Debugging a probabilistic filter on real hardware is slow and ambiguous: when the robot
+misbehaves it is rarely obvious whether the fault is in the estimator, the controller, the
+calibration, or the wheels slipping on the floor. To remove that ambiguity, the whole
+stack was first brought up against a **Gazebo digital twin** of the Puzzlebot and the
+station layout, with **RViz** used as the debugging window into the filter's internal
+state (estimated pose, TF tree, covariance ellipse, LiDAR returns and goal markers).
+
+Simulation gives access to something the real robot never provides: **ground truth**. With
+the true pose available from Gazebo, the EKF estimate could be judged against a reference
+instead of against intuition, which is what made it possible to characterize the wheel
+noise model and tune the measurement covariances before touching the hardware.
+
+| Subsystem | Validated in simulation |
+|---|---|
+| **ArUco detection + PnP** | Marker recovery across distance, viewing angle and lighting; consistency of the recovered pose axes; sanity of the range–bearing conversion |
+| **EKF localization** | Growth of the covariance during dead-reckoning and its contraction when a mapped landmark enters the field of view; rejection of unmapped IDs |
+| **Bug2 navigation** | Goal chaining across several waypoints, wall-following transitions, M-line re-crossing and escape from `U`-shaped traps |
+| **Full integration** | The complete FSM sequence with all nodes running together, checking that no two modules publish `/cmd_vel` at once |
+
+### ArUco detection across pose and lighting
+
+The detector was exercised against the marker in the conditions that break monocular pose
+estimation in practice: close and frontal, far away with the marker only a few pixels
+wide, under strong specular glare on the floor, and at a steep oblique angle. The overlaid
+axes are the pose returned by `solvePnP` — the qualitative check is that the axes stay
+attached to the marker plane and do not flip as the viewpoint degrades.
+
+<img width="443" height="299" alt="image" src="https://github.com/user-attachments/assets/3f16392b-0c2f-4c7b-bee9-b364e53810dd" />
+![ArUco detection and PnP pose estimation in Gazebo under varying distance, angle and lighting](docs/media/aruco_gazebo_tests.png)
+
+*ArUco detection in Gazebo. Top-left: near, frontal view. Top-right: long range, small
+marker footprint. Bottom-left: strong floor glare. Bottom-right: oblique viewing angle.*
+
+### Covariance collapse on landmark sighting
+
+The clearest demonstration of what the EKF buys you: the robot drives on odometry alone
+and the covariance ellipse in RViz grows steadily; the moment a mapped ArUco marker enters
+the camera's field of view, the correction step fires and the ellipse snaps down around
+the corrected pose.
+
+https://github.com/user-attachments/assets/8ce27e97-5c7d-452b-afc5-70bc65ca057e
+
+### Multi-goal navigation run
+
+A full navigation test in the simulated environment: the robot is given a sequence of
+goals and reaches them one after another, with Gazebo and RViz side by side so the
+simulated world and the robot's belief about it can be compared frame by frame.
+
+
+
+https://github.com/user-attachments/assets/402d2e5e-fdb9-42a4-b0cc-104cad033a0f
+
+
+
+> **Note on simulation assets.** The Gazebo worlds, robot model and ArUco assets used for
+> these tests are teaching materials provided by **Manchester Robotics** and are therefore
+> not redistributed in this repository. The package itself is simulator-agnostic: any world
+> that publishes the expected camera, encoder and LiDAR topics will run it unchanged.
 
 ---
 
@@ -121,6 +193,13 @@ velocity commands at the same time.
   sequence once the robot is centered and aligned — a deliberate design choice to handle
   the sensor's blind spot.
 
+- **Sim-to-real transfer.** The gap between the two setups is concentrated in the sensors,
+  not the logic: real encoders slip and quantize, and the real camera introduces motion
+  blur, exposure lag and stream dropouts that the simulated one does not. Consequently the
+  parameters that needed re-tuning on hardware were the wheel noise coefficients, the
+  camera calibration and the servoing gains, while the state machine, the planner and the
+  filter structure carried over unchanged.
+
 ---
 
 ## Installation
@@ -150,6 +229,11 @@ The vision node expects a calibration file at `~/.ros/camera_info/puzz_cam.yaml`
 (camera matrix + distortion coefficients). If it is missing, the node falls back to a
 generic matrix and warns you — pose estimates will be inaccurate, so calibrate first.
 
+Simulation and hardware need **different** calibration files: the simulated camera is
+ideal (no distortion, intrinsics taken straight from the sensor plugin), while the real one
+must be calibrated from a checkerboard. Point `calib_file` at the right one for the setup
+you are running.
+
 ---
 
 ## Usage
@@ -178,6 +262,22 @@ ros2 launch pick_drop_nav pick_drop_launch.py \
     bug_algorithm:=bug0 target_id:=17
 ```
 
+### Running in simulation
+
+Start the Gazebo world and the robot model first, then launch this package exactly as you
+would on hardware — it subscribes to the same topic names:
+
+```bash
+# 1. Bring up the simulated world + Puzzlebot model (Manchester Robotics assets)
+ros2 launch <your_gazebo_bringup> <world_launch_file>     # <-- ajusta a tu bringup
+
+# 2. Launch the mission stack against the simulated robot
+ros2 launch pick_drop_nav pick_drop_launch.py
+
+# 3. Open RViz to watch the EKF pose, TF tree and covariance ellipse
+rviz2
+```
+
 ### Running nodes individually
 
 Useful for debugging a single subsystem:
@@ -194,8 +294,12 @@ ros2 run pick_drop_nav mission_coordinator
 
 ## Results
 
-The system was validated on real hardware across three test scenarios, five runs each.
-Times are full mission cycles (pick → transport → drop → return).
+Development followed a two-stage validation: every subsystem was first exercised in the
+Gazebo digital twin — where ArUco detection, EKF correction, obstacle avoidance and the
+full state machine were confirmed to work together — and only then deployed to the
+physical robot. The figures below are from the **real hardware** runs: three test
+scenarios, five runs each. Times are full mission cycles (pick → transport → drop →
+return).
 
 | Scenario | Description | Avg. time | Success rate |
 |---|---|---|---|
@@ -207,7 +311,8 @@ Obstacle avoidance worked reliably in every scenario, including the `U`-trap. Th
 failures were not navigation failures: they came from (a) a brief camera-stream dropout
 that lost the markers, and (b) the cube being deposited right at the boundary of the
 30 cm target zone rather than inside it — the precision limit of the open-loop final
-approach.
+approach. Both failure modes are absent in simulation, which is precisely the class of
+problem a digital twin cannot catch for you.
 
 ---
 
@@ -223,6 +328,8 @@ approach.
 - Bug2's completeness guarantee escapes complex obstacles where other reactive methods get
   trapped.
 - A single explicit state machine prevents conflicting velocity commands across modules.
+- Topic-level parity between the simulated and the real robot means the same code runs in
+  both, so simulation is a real development environment rather than a separate prototype.
 
 **Limitations**
 - Environment-dependent: corrections require visible markers, so poor lighting, bad marker
@@ -233,6 +340,8 @@ approach.
   map-based planner would.
 - The cube leaves the camera's field of view in the final centimeters, forcing the
   open-loop timed approach — the most delicate part of the task.
+- Simulation does not reproduce wheel slip, motion blur or camera-stream dropouts, so
+  passing in Gazebo is a necessary but not a sufficient condition for passing on hardware.
 
 ---
 
@@ -248,6 +357,8 @@ pick_drop_nav/
 │   └── main_controller.py       # Mission finite-state machine
 ├── launch/
 │   └── pick_drop_launch.py      # Full-mission launch file
+├── docs/
+│   └── media/                   # Simulation figures and demo clips
 ├── package.xml
 ├── setup.py
 └── README.md
@@ -262,6 +373,8 @@ pick_drop_nav/
 
 Developed for the *Integration of Robotics and Intelligent Systems* (TE3003B) final
 challenge, Tecnológico de Monterrey — Campus Estado de México.
+
+Simulation environment and robot model courtesy of **Manchester Robotics**.
 
 ## References
 
