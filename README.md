@@ -131,7 +131,6 @@ axes are the pose returned by `solvePnP` — the qualitative check is that the a
 attached to the marker plane and do not flip as the viewpoint degrades.
 
 <img width="443" height="299" alt="image" src="https://github.com/user-attachments/assets/3f16392b-0c2f-4c7b-bee9-b364e53810dd" />
-![ArUco detection and PnP pose estimation in Gazebo under varying distance, angle and lighting](docs/media/aruco_gazebo_tests.png)
 
 *ArUco detection in Gazebo. Top-left: near, frontal view. Top-right: long range, small
 marker footprint. Bottom-left: strong floor glare. Bottom-right: oblique viewing angle.*
